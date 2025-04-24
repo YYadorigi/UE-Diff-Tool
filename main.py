@@ -8,29 +8,34 @@ from DiffTool import *
 UE_PREV_SOURCE_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.4\\Engine\\Source")
 UE_CUR_SOURCE_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.5\\Engine\\Source")
 
-def parse_ue_classes_and_functions(UEpath: Path) -> tuple[dict[str, dict[str, any]], dict[str, dict[str, any]]]:
+def parse_ue_classes(UEpath: Path) -> dict[str, dict[str, any]]:
     u_classes: dict[str, dict[str, any]] = {}
-    u_functions: dict[str, dict[str, any]] = {}
 
     UE_DEVELOPER_DIR = os.path.join(UEpath, "Developer")
     UE_EDITOR_DIR = os.path.join(UEpath, "Editor")
     UE_RUNTIME_DIR = os.path.join(UEpath, "Runtime")
-    # UE_PLUGINS_DIR = os.path.join(UEpath, "Plugins")
+    UE_PLUGINS_DIR = os.path.join(UEpath, "Plugins")
 
     # Traverse the UE source code directory
-    for target_dir in [UE_DEVELOPER_DIR, UE_EDITOR_DIR, UE_RUNTIME_DIR, ]:
+    for target_dir in [UE_DEVELOPER_DIR, UE_EDITOR_DIR, UE_RUNTIME_DIR, UE_PLUGINS_DIR]:
         for root, _, files in os.walk(target_dir):
             for file in files:
                 if file.endswith(".h"):
                     file_path = os.path.join(root, file)
                     try:
                         with open(file_path, "r", encoding='utf-8', errors='ignore') as f:
+                            # Read the file content
                             content = f.read()
 
+                            # Preprocess the content by removing comments and preprocessor directives
+                            content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
+                            content = re.sub(r'//.*$', '', content, flags=re.MULTILINE)
+                            content = re.sub(r'#.*$', '', content, flags=re.MULTILINE)
+    
                             # Extract all UCLASS macro definitions
                             class_matches = re.finditer(
-                                r'UCLASS\s*\((.*?)\)\s*'      # Capture UCLASS parameters
-                                r'class\s+(.*?)\s*([{;])',    # Capture class declaration until { or ;
+                                r'UCLASS\s*\((.*?)\)\s*'
+                                r'class\s+(.*?)\s*([{;])',    # Skip content between #if and #endif
                                 content,
                                 re.DOTALL
                             )
@@ -45,24 +50,20 @@ def parse_ue_classes_and_functions(UEpath: Path) -> tuple[dict[str, dict[str, an
                                 try:
                                     class_decl_parsed = parse_class_declaration(class_decl)
                                 except:
-                                    print("File directory: ", file_path)
-                                    print(class_match.group(0))
-                                    print('-' * 80)
-                                    print(class_decl)
-                                    print('-' * 80)
-                                    print(class_decl_parsed)
-                                    
-                                continue
+                                    print(f"Error parsing class declaration: {class_decl}")
+                                    continue
 
                                 class_name = class_decl_parsed["name"]
                                 inheritance_list = class_decl_parsed["bases"]
 
                                 u_classes[class_name] = {
+                                    "relpath": os.path.relpath(file_path, UEpath),
                                     "uclass_params": uclass_params,
-                                    "inheritance_list": inheritance_list
+                                    "inheritance_list": inheritance_list,
+                                    "ufunctions": [],
                                 }
                             
-                                class_body = content[class_match.end():]
+                                class_body = content[class_match.end() - 1:]
 
                                 if class_body.startswith(';'):
                                     continue
@@ -78,11 +79,11 @@ def parse_ue_classes_and_functions(UEpath: Path) -> tuple[dict[str, dict[str, an
                                         if brace_level == 0:
                                             break
                                     i += 1
-                                class_body = class_body[:(i + 1)]
+                                class_body = class_body[:(i+1)]
                             
                                 # Find all UFUNCTION declarations in class body
                                 function_matches = re.finditer(
-                                    r'UFUNCTION.*?(?=\{|;)',     # Function declaration ending
+                                    r'UFUNCTION.*?([{;])',     # Function declaration ending
                                     class_body,
                                     re.DOTALL
                                 )
@@ -92,54 +93,64 @@ def parse_ue_classes_and_functions(UEpath: Path) -> tuple[dict[str, dict[str, an
                                     ufunction_params = split_arguments(ufunction_str)
 
                                     match = re.search(
-                                        r'UFUNCTION\s*\(.*?{}.*?\)'.format(re.escape(ufunction_str)),
+                                        r'UFUNCTION\s*\(\s*?{}\s*?\)'.format(re.escape(ufunction_str)),
                                         func_match.group(0), 
                                         re.DOTALL
                                     )
 
-                                    func_decl = func_match.group(0)[len(match.group(0)):]
-                                
+                                    func_decl = func_match.group(0)[len(match.group(0)):-1].strip()
+
+                                    # Remove lines beginning with "template"
+                                    func_decl = re.sub(r'^\s*template.*?\n', '', func_decl, flags=re.MULTILINE)
+
+                                    # Remove C++ keywords
                                     func_decl = (lambda decl: 
-                                        re.sub(r'\)\s*(const|explicit|virtual|inline|noexcept|final|override)*\s*', ')', decl, flags=re.DOTALL) + ' {}'
+                                        re.sub(r'\b(const|volatile|explicit|virtual|inline|friend|constexpr|consteval|noexcept|final|override|static|extern)\b\s*', '', decl, flags=re.DOTALL)
                                     )(func_decl)
 
-                                    func_decl = re.sub(r'\bvirtual\b\s*', '', func_decl)
-                                
-                                    func_info = parse_function_declaration(func_decl)
+                                    # Remove Unreal Engine API prefixes
+                                    func_decl = re.sub(r'\b[A-Z_]+_API\s*', '', func_decl, flags=re.DOTALL)
 
-                                    if not func_info:
-                                        continue
+                                    # split by space
+                                    func_name = func_decl.split()[1].split('(')[0]
 
-                                    func_name = class_name + "::" + func_info["name"]
+                                    # Add function name to list
+                                    u_classes[class_name]["ufunctions"].append({
+                                        "name": func_name,
+                                        "ufunc_params": ufunction_params
+                                    })
 
-                                    u_functions[func_name] = {
-                                        'ufunc_params': ufunction_params,
-                                        'return_type': func_info["type"],
-                                        'func_params': func_info["params"]
-                                    }
                     except Exception as e:
                         print(e)
                         continue
 
-    return u_classes, u_functions
+    return u_classes
 
 
-def filter_blueprinttype_classes(u_classes: dict[str, dict[str, any]]) -> list[str]:
-    blueprinttype_classes: list[str] = []
+def filter_blueprinttype_classes(u_classes: dict[str, dict[str, any]]):
+    blueprinttype_classes = []
     for class_name, class_info in u_classes.items():
         if "BlueprintType" in class_info["uclass_params"]:
-            blueprinttype_classes.append(class_name)
+            blueprinttype_classes.append({
+                "name": class_name,
+                "relpath": class_info["relpath"],
+                "ufunctions": filter_blueprintcallable_functions(class_info["ufunctions"])
+            })
     return blueprinttype_classes
 
 
-def filter_blueprintable_classes(u_classes: dict[str, dict[str, any]]) -> list[str]:
-    # Build inheritance graph and cache blueprintable status
+def filter_blueprintable_classes(u_classes: dict[str, dict[str, any]]):
     blueprintable_cache = {}
     
     def is_blueprintable(cls_name: str) -> bool:
         # Check cache first
         if cls_name in blueprintable_cache:
             return blueprintable_cache[cls_name]
+        
+        # Check if class is marked as NotBlueprintable
+        if "NotBlueprintable" in [p.split('=')[0].strip() for p in u_classes.get(cls_name, {}).get("uclass_params", [])]:
+            blueprintable_cache[cls_name] = False
+            return False
         
         # Check current class's UCLASS parameters
         current_class = u_classes.get(cls_name, {})
@@ -159,82 +170,110 @@ def filter_blueprintable_classes(u_classes: dict[str, dict[str, any]]) -> list[s
     
     # Check all classes and collect qualified ones
     result = []
-    for cls_name in u_classes:
+    for cls_name, cls_info in u_classes.items():
         if is_blueprintable(cls_name):
-            result.append(cls_name)
+            result.append({
+                "name": cls_name,
+                "relpath": cls_info["relpath"],
+                "ufunctions": filter_blueprintcallable_functions(cls_info["ufunctions"])
+            })
     
     return result
 
 
-def filter_blueprintcallable_functions(u_functions: dict[str, dict[str, any]]):
+def filter_blueprintcallable_functions(u_functions: list[dict[str, any]]) -> list[str]:
     blueprintcallable_functions: list[str] = []
-    for function_name, function_info in u_functions.items():
-        if "BlueprintCallable" in function_info["ufunc_params"]:
-            blueprintcallable_functions.append(function_name)
+    for function in u_functions:
+        if "BlueprintCallable" in function["ufunc_params"]:
+            blueprintcallable_functions.append(function["name"])
     return blueprintcallable_functions
 
 
-def filter_blueprintimplementableevent_functions(u_functions: dict[str, dict[str, any]]):
-    blueprintimplementableevent_functions: list[str] = []
-    for function_name, function_info in u_functions.items():
-        if "BlueprintImplementableEvent" in function_info["ufunc_params"]:
-            blueprintimplementableevent_functions.append(function_name)
-    return blueprintimplementableevent_functions
-
-
 def diff(prev_list, cur_list):
-    prev_set = set(prev_list)
-    cur_set = set(cur_list)
+    prev_classes = {cls['name']: cls for cls in prev_list}
+    cur_classes = {cls['name']: cls for cls in cur_list}
     
-    added = sorted(list(cur_set - prev_set))
-    removed = sorted(list(prev_set - cur_set))
+    result = []
     
-    return {
-        'added': added,
-        'removed': removed,
-        'modified': [item for item in cur_list if item not in prev_set and item not in removed],
-    }
+    all_classes = set(prev_classes.keys()).union(cur_classes.keys())
+    
+    for cls_name in all_classes:
+        prev_cls = prev_classes.get(cls_name)
+        cur_cls = cur_classes.get(cls_name)
+        
+        prev_funcs = prev_cls['ufunctions'] if prev_cls else []
+        cur_funcs = cur_cls['ufunctions'] if cur_cls else []
+        
+        added = list(set(cur_funcs) - set(prev_funcs))
+        removed = list(set(prev_funcs) - set(cur_funcs))
+        
+        # Only keep classes with actual changes
+        if added or removed:  # Check if either list has elements
+            module_path = (prev_cls['relpath'] if prev_cls else cur_cls['relpath']).split('\\')[1]
+            relative_path = 'Engine\\Source\\' + (prev_cls['relpath'] if prev_cls else cur_cls['relpath'])
+
+            result.append({
+                'class_name': cls_name,
+                'module': module_path,
+                'relpath': relative_path,
+                'added_functions': sorted(added),
+                'removed_functions': sorted(removed)
+            })
+    
+    return result
 
 
-def diff_to_excel(prev_list, cur_list, output_path="api_diff.xlsx"):
-    diff_result = diff(prev_list, cur_list)
+def diff_to_excel(diff_result, output_file):
+    # Convert to DataFrame and explode list columns
+    df = pd.DataFrame(diff_result)
     
-    added_df = pd.DataFrame({"Added APIs": diff_result['added']})
-    removed_df = pd.DataFrame({"Removed APIs": diff_result['removed']})
+    # Create separate rows for added and removed functions
+    added_df = df.explode('added_functions').dropna(subset=['added_functions']).copy()
+    added_df['change_type'] = 'Added'
+    added_df.rename(columns={'added_functions': 'function'}, inplace=True)
     
-    with pd.ExcelWriter(output_path) as writer:
-        added_df.to_excel(writer, sheet_name="Added", index=False)
-        removed_df.to_excel(writer, sheet_name="Removed", index=False)
+    removed_df = df.explode('removed_functions').dropna(subset=['removed_functions']).copy()
+    removed_df['change_type'] = 'Removed'
+    removed_df.rename(columns={'removed_functions': 'function'}, inplace=True)
     
-    print(f"Excel output: {output_path}")
-
+    # Combine both results
+    combined_df = pd.concat([added_df, removed_df], ignore_index=True)
+    
+    # Reorder and select final columns
+    final_df = combined_df[['class_name', 'module', 'relpath', 'change_type', 'function']]
+    
+    with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
+        final_df.to_excel(writer, sheet_name="API Changes", index=False)
+        
+        # Auto-adjust column widths
+        worksheet = writer.sheets['API Changes']
+        for i, col in enumerate(final_df.columns):
+            max_len = max(final_df[col].astype(str).map(len).max(), len(col)) + 2
+            worksheet.set_column(i, i, max_len)
+    
+    print(f"Excel report saved to: {output_file}")
+    
 
 if __name__ == "__main__":
-    prev_u_classes, prev_u_functions = parse_ue_classes_and_functions(UE_PREV_SOURCE_DIR)
+    prev_u_classes = parse_ue_classes(UE_PREV_SOURCE_DIR)
 
-    prev_blueprinttype_classes = filter_blueprinttype_classes(prev_u_classes)
-    prev_blueprintable_classes = filter_blueprintable_classes(prev_u_classes)
-    prev_blueprintcallable_functions = filter_blueprintcallable_functions(prev_u_functions)
+    prev_blueprint_classes = list({
+        cls["name"]: cls
+        for cls in filter_blueprinttype_classes(prev_u_classes) + filter_blueprintable_classes(prev_u_classes)
+    }.values())
+    
+    # Parse current classes
+    cur_u_classes = parse_ue_classes(UE_CUR_SOURCE_DIR)
+    
+    # Merge and deduplicate current classes
+    cur_blueprint_classes = list({
+        cls["name"]: cls 
+        for cls in filter_blueprinttype_classes(cur_u_classes) + filter_blueprintable_classes(cur_u_classes)
+    }.values())
 
-    cur_u_classes, cur_u_functions = parse_ue_classes_and_functions(UE_CUR_SOURCE_DIR)
+    blueprint_api_diff = diff(prev_blueprint_classes, cur_blueprint_classes)
 
-    cur_blueprinttype_classes = filter_blueprinttype_classes(cur_u_classes)
-    cur_blueprintable_classes = filter_blueprintable_classes(cur_u_classes)
-    cur_blueprintcallable_functions = filter_blueprintcallable_functions(cur_u_functions)
+    # import json
+    # print(json.dumps(blueprint_api_diff, indent=4))
 
-    blueprinttype_diff = diff(prev_blueprinttype_classes, cur_blueprinttype_classes)
-    blueprintable_diff = diff(prev_blueprintable_classes, cur_blueprintable_classes)
-    blueprintcallable_diff = diff(prev_blueprintcallable_functions, cur_blueprintcallable_functions)
-
-    print("Previous BlueprintType classes: ", len(prev_blueprinttype_classes))
-    print("Current BlueprintType classes: ", len(cur_blueprinttype_classes))
-
-    print("Previous Blueprintable classes: ", len(prev_blueprintable_classes))
-    print("Current Blueprintable classes: ", len(cur_blueprintable_classes))
-
-    print("Previous BlueprintCallable functions: ", len(prev_blueprintcallable_functions))
-    print("Current BlueprintCallable functions: ", len(cur_blueprintcallable_functions))
-
-    diff_to_excel(prev_blueprinttype_classes, cur_blueprinttype_classes, "outputs/BlueprintType.xlsx")
-    diff_to_excel(prev_blueprintable_classes, cur_blueprintable_classes, "outputs/Blueprintable.xlsx")
-    diff_to_excel(prev_blueprintcallable_functions, cur_blueprintcallable_functions, "outputs/BlueprintCallable.xlsx")
+    diff_to_excel(blueprint_api_diff, "outputs/diff.xlsx")

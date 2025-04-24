@@ -1,10 +1,11 @@
-import json
 from cxxheaderparser.types import *
 from cxxheaderparser.simple import parse_string
 from DiffTool.utils import *
 
-def parse_type_specifier(type_specifier: PQNameSegment) -> str:
-    # Extract base type name
+# cxxheaderparser utilities
+
+# TODO: Handle more complex cases: typedefs, decltypes, auto types.
+def parse_type_specifier(type_specifier: FundamentalSpecifier | NameSpecifier) -> str:
     type_name = type_specifier.name
 
     if isinstance(type_specifier, FundamentalSpecifier):
@@ -14,17 +15,16 @@ def parse_type_specifier(type_specifier: PQNameSegment) -> str:
     if type_specifier.specialization:
         # Process each template argument
         template_args = []
-        for template_arg in type_specifier.specialization.args:
-            # Handle Type arguments
-            if isinstance(template_arg.arg, DecoratedType):
-                template_args.append(parse_type(template_arg.arg))
-            # Handle Value arguments with tokens
-            elif isinstance(template_arg.arg, Value):
-                # Concatenate token values while preserving original format
-                template_args.append("".join(t.value for t in template_arg.arg.tokens))
-            # Handle other argument types (fallback)
+        for template_argument in type_specifier.specialization.args:
+            if isinstance(template_argument.arg, DecoratedType):
+                template_args.append(parse_type(template_argument.arg))
+            elif isinstance(template_argument.arg, FunctionType):
+                # TODO: Handle function pointers
+                pass
+            elif isinstance(template_argument.arg, Value):
+                template_args.append("".join(t.value for t in template_argument.arg.tokens))
             else:
-                template_args.append(str(template_arg.arg))
+                template_args.append(str(template_argument.arg))
         
         # Combine template arguments with proper syntax
         type_name += f"<{', '.join(template_args)}>"
@@ -60,7 +60,6 @@ def parse_type(type: DecoratedType) -> str:
         if type.volatile == True:
             type_str = "volatile " + type_str
     else:
-        # Fallback for unknown types
         type_str = str(type)
     
     return type_str
@@ -78,7 +77,10 @@ def parse_class_declaration(class_decl: str) -> dict[str, any]:
     Returns:
         dict[str, any]: A dictionary containing the parsed components, including the class name and its base classes
     """
-    parsed = parse_string(class_decl)
+    try:
+        parsed = parse_string(class_decl)
+    except Exception as e:
+        raise ValueError(f"Failed to parse class declaration: {e}")
 
     if not parsed.namespace.classes:
         raise ValueError("No classes found in the provided declaration")
@@ -97,6 +99,7 @@ def parse_class_declaration(class_decl: str) -> dict[str, any]:
         ]
     }
 
+    # import json
     # print(json.dumps(result, indent=4))
     
     return result
@@ -114,7 +117,10 @@ def parse_function_declaration(func_decl: str) -> dict[str, any]:
     Returns:
         dict[str, any]: A dictionary containing the parsed components, including the function name, return type, and parameters
     """
-    parsed = parse_string(func_decl)
+    try:
+        parsed = parse_string(func_decl)
+    except Exception as e:
+        raise ValueError(f"Failed to parse function declaration: {e}")
 
     try:
         if parsed.namespace.method_impls:
@@ -144,6 +150,7 @@ def parse_function_declaration(func_decl: str) -> dict[str, any]:
         ]
     }
 
+    # import json
     # print(json.dumps(result, indent=4))
 
     return result
