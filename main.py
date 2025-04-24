@@ -100,17 +100,8 @@ def parse_ue_classes(UEpath: Path, UEversion: str) -> dict[str, dict[str, any]]:
                                 ufunction_params = split_arguments(ufunction_str)
 
                                 func_decl = func_match.group(4)
-
-                                try:
-                                    func_name = func_decl[:func_decl.find('(')].strip().split()[-1]
-                                except:
-                                    print("=" * 80)
-                                    print(func_decl)
-                                    print("=" * 80)
-                                    print(func_match.group(3))
-                                    print("=" * 80)
-                                    print(func_match.group(4))
-                                    exit(0)
+                                
+                                func_name = func_decl[:func_decl.find('(')].strip().split()[-1]
 
                                 # Add function name to list
                                 u_classes[class_name]["ufunctions"].append({
