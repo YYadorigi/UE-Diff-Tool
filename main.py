@@ -1,20 +1,22 @@
 import os
 import re
+import json
 from pathlib import Path
 import pandas as pd
 from DiffTool import *
 
 # Configure the path to the Unreal Engine source code directory
-UE_PREV_SOURCE_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.4\\Engine\\Source")
-UE_CUR_SOURCE_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.5\\Engine\\Source")
+UE_PREV_ROOT_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.4")
+UE_CUR_ROOT_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.5")
 
-def parse_ue_classes(UEpath: Path) -> dict[str, dict[str, any]]:
+def parse_ue_classes(UEpath: Path, UEversion: str) -> dict[str, dict[str, any]]:
     u_classes: dict[str, dict[str, any]] = {}
 
-    UE_DEVELOPER_DIR = os.path.join(UEpath, "Developer")
-    UE_EDITOR_DIR = os.path.join(UEpath, "Editor")
-    UE_RUNTIME_DIR = os.path.join(UEpath, "Runtime")
-    UE_PLUGINS_DIR = os.path.join(UEpath, "Plugins")
+    UE_SOURCE_DIR = Path("Engine\\Source")
+    UE_DEVELOPER_DIR = os.path.join(UEpath, UE_SOURCE_DIR, "Developer")
+    UE_EDITOR_DIR = os.path.join(UEpath, UE_SOURCE_DIR, "Editor")
+    UE_RUNTIME_DIR = os.path.join(UEpath, UE_SOURCE_DIR, "Runtime")
+    UE_PLUGINS_DIR = os.path.join(UEpath, UE_SOURCE_DIR, "Plugins")
 
     # Traverse the UE source code directory
     for target_dir in [UE_DEVELOPER_DIR, UE_EDITOR_DIR, UE_RUNTIME_DIR, UE_PLUGINS_DIR]:
@@ -22,108 +24,99 @@ def parse_ue_classes(UEpath: Path) -> dict[str, dict[str, any]]:
             for file in files:
                 if file.endswith(".h"):
                     file_path = os.path.join(root, file)
-                    try:
-                        with open(file_path, "r", encoding='utf-8', errors='ignore') as f:
-                            # Read the file content
-                            content = f.read()
+                    with open(file_path, "r", encoding='utf-8', errors='ignore') as f:
+                        # Read the file content
+                        content = f.read()
 
-                            # Preprocess the content by removing comments and preprocessor directives
-                            content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
-                            content = re.sub(r'//.*$', '', content, flags=re.MULTILINE)
-                            content = re.sub(r'#.*$', '', content, flags=re.MULTILINE)
+                        # Preprocessing
+                        content = re.sub(r'^\s*//.*$', '', content, flags=re.MULTILINE)     # Remove C++ comments
+                        content = re.sub(r'^\s*#.*$', '', content, flags=re.MULTILINE)      # Remove preprocessor directives
     
-                            # Extract all UCLASS macro definitions
-                            class_matches = re.finditer(
-                                r'UCLASS\s*\((.*?)\)\s*'
-                                r'class\s+(.*?)\s*([{;])',    # Skip content between #if and #endif
-                                content,
-                                re.DOTALL
+                        # Extract all UCLASS macro definitions
+                        class_matches = re.finditer(
+                            r'^\s*UCLASS\s*\((.*?)\)\s*'
+                            r'class\s+(.*?)\s*([{;])',    # Skip content between #if and #endif
+                            content,
+                            re.DOTALL | re.MULTILINE
+                        )
+
+                        for class_match in class_matches:
+                            uclass_params = split_arguments(extract_arguments('UCLASS(' + class_match.group(1) + ')', 'UCLASS'))
+
+                            class_decl = (lambda decl: 
+                                'class ' + re.sub(r'\b[A-Z_]+_API\s*', '', decl.strip()) + ' {};'
+                            )(class_match.group(2))
+
+                            # Match UE_DEPRECATED macro
+                            deprecated_match = re.search(r"UE_DEPRECATED\s*\(\s*(\d+\.\d+)\s*,\s*\"(.*?)\"\s*\)", class_decl, re.DOTALL)
+                            if deprecated_match:
+                                deprecated_version = deprecated_match.group(1)
+                                if float(deprecated_version) <= float(UEversion):
+                                    continue
+                                class_decl = class_decl[:deprecated_match.start()] + class_decl[deprecated_match.end():]
+
+                            class_decl_parsed = parse_class_declaration(class_decl)
+
+                            class_name = class_decl_parsed["name"]
+                            inheritance_list = class_decl_parsed["bases"]
+
+                            u_classes[class_name] = {
+                                "relpath": os.path.relpath(file_path, UEpath),
+                                "uclass_params": uclass_params,
+                                "inheritance_list": inheritance_list,
+                                "ufunctions": [],
+                            }
+                            
+                            class_body = content[class_match.end() - 1:]
+                            if class_body.startswith(';'):
+                                continue
+                            brace_level = 0
+                            i = 0
+                            while i < len(class_body):
+                                if class_body[i] == '{':
+                                    brace_level += 1
+                                elif class_body[i] == '}':
+                                    brace_level -= 1
+                                    if brace_level == 0:
+                                        break
+                                i += 1
+                            class_body = class_body[:(i+1)]
+                            
+                            # Find all UFUNCTION declarations in class body
+                            function_matches = re.finditer(
+                                r'(?:^\s*UE_DEPRECATED\s*\(\s*(\d+\.\d+)\s*,\s*"(.*?)"\s*\)\s*)?'
+                                r'^\s*(UFUNCTION\s*\([^\n]*\))\s*'
+                                r'^\s*([^{;]+)',
+                                class_body,
+                                re.DOTALL | re.MULTILINE
                             )
 
-                            for class_match in class_matches:
-                                uclass_params = split_arguments(extract_arguments('UCLASS(' + class_match.group(1) + ')', 'UCLASS'))
+                            for func_match in function_matches:
+                                deprecated_version = func_match.group(1)
+                                if deprecated_version and float(deprecated_version) <= float(UEversion):
+                                    continue
 
-                                class_decl = (lambda decl: 
-                                    'class ' + re.sub(r'\b[A-Z_]+_API\s*', '', decl.strip()) + ' {};'
-                                )(class_match.group(2))
+                                ufunction_str = extract_arguments(func_match.group(3), 'UFUNCTION')
+                                ufunction_params = split_arguments(ufunction_str)
+
+                                func_decl = func_match.group(4)
 
                                 try:
-                                    class_decl_parsed = parse_class_declaration(class_decl)
+                                    func_name = func_decl[:func_decl.find('(')].strip().split()[-1]
                                 except:
-                                    print(f"Error parsing class declaration: {class_decl}")
-                                    continue
+                                    print("=" * 80)
+                                    print(func_decl)
+                                    print("=" * 80)
+                                    print(func_match.group(3))
+                                    print("=" * 80)
+                                    print(func_match.group(4))
+                                    exit(0)
 
-                                class_name = class_decl_parsed["name"]
-                                inheritance_list = class_decl_parsed["bases"]
-
-                                u_classes[class_name] = {
-                                    "relpath": os.path.relpath(file_path, UEpath),
-                                    "uclass_params": uclass_params,
-                                    "inheritance_list": inheritance_list,
-                                    "ufunctions": [],
-                                }
-                            
-                                class_body = content[class_match.end() - 1:]
-
-                                if class_body.startswith(';'):
-                                    continue
-
-                                # Find class body boundaries
-                                brace_level = 0
-                                i = 0
-                                while i < len(class_body):
-                                    if class_body[i] == '{':
-                                        brace_level += 1
-                                    elif class_body[i] == '}':
-                                        brace_level -= 1
-                                        if brace_level == 0:
-                                            break
-                                    i += 1
-                                class_body = class_body[:(i+1)]
-                            
-                                # Find all UFUNCTION declarations in class body
-                                function_matches = re.finditer(
-                                    r'UFUNCTION.*?([{;])',     # Function declaration ending
-                                    class_body,
-                                    re.DOTALL
-                                )
-
-                                for func_match in function_matches:
-                                    ufunction_str = extract_arguments(func_match.group(0), 'UFUNCTION')
-                                    ufunction_params = split_arguments(ufunction_str)
-
-                                    match = re.search(
-                                        r'UFUNCTION\s*\(\s*?{}\s*?\)'.format(re.escape(ufunction_str)),
-                                        func_match.group(0), 
-                                        re.DOTALL
-                                    )
-
-                                    func_decl = func_match.group(0)[len(match.group(0)):-1].strip()
-
-                                    # Remove lines beginning with "template"
-                                    func_decl = re.sub(r'^\s*template.*?\n', '', func_decl, flags=re.MULTILINE)
-
-                                    # Remove C++ keywords
-                                    func_decl = (lambda decl: 
-                                        re.sub(r'\b(const|volatile|explicit|virtual|inline|friend|constexpr|consteval|noexcept|final|override|static|extern)\b\s*', '', decl, flags=re.DOTALL)
-                                    )(func_decl)
-
-                                    # Remove Unreal Engine API prefixes
-                                    func_decl = re.sub(r'\b[A-Z_]+_API\s*', '', func_decl, flags=re.DOTALL)
-
-                                    # split by space
-                                    func_name = func_decl.split()[1].split('(')[0]
-
-                                    # Add function name to list
-                                    u_classes[class_name]["ufunctions"].append({
-                                        "name": func_name,
-                                        "ufunc_params": ufunction_params
-                                    })
-
-                    except Exception as e:
-                        print(e)
-                        continue
-
+                                # Add function name to list
+                                u_classes[class_name]["ufunctions"].append({
+                                    "name": func_name,
+                                    "ufunc_params": ufunction_params
+                                })
     return u_classes
 
 
@@ -134,7 +127,7 @@ def filter_blueprinttype_classes(u_classes: dict[str, dict[str, any]]):
             blueprinttype_classes.append({
                 "name": class_name,
                 "relpath": class_info["relpath"],
-                "ufunctions": filter_blueprintcallable_functions(class_info["ufunctions"])
+                "ufunctions": filter_blueprint_functions(class_info["ufunctions"])
             })
     return blueprinttype_classes
 
@@ -175,18 +168,18 @@ def filter_blueprintable_classes(u_classes: dict[str, dict[str, any]]):
             result.append({
                 "name": cls_name,
                 "relpath": cls_info["relpath"],
-                "ufunctions": filter_blueprintcallable_functions(cls_info["ufunctions"])
+                "ufunctions": filter_blueprint_functions(cls_info["ufunctions"])
             })
     
     return result
 
 
-def filter_blueprintcallable_functions(u_functions: list[dict[str, any]]) -> list[str]:
-    blueprintcallable_functions: list[str] = []
+def filter_blueprint_functions(u_functions: list[dict[str, any]]) -> list[str]:
+    blueprint_functions: list[str] = []
     for function in u_functions:
-        if "BlueprintCallable" in function["ufunc_params"]:
-            blueprintcallable_functions.append(function["name"])
-    return blueprintcallable_functions
+        if "BlueprintCallable" in function["ufunc_params"] or "BlueprintPure" in function["ufunc_params"]:
+            blueprint_functions.append(function["name"])
+    return blueprint_functions
 
 
 def diff(prev_list, cur_list):
@@ -209,13 +202,10 @@ def diff(prev_list, cur_list):
         
         # Only keep classes with actual changes
         if added or removed:  # Check if either list has elements
-            module_path = (prev_cls['relpath'] if prev_cls else cur_cls['relpath']).split('\\')[1]
-            relative_path = 'Engine\\Source\\' + (prev_cls['relpath'] if prev_cls else cur_cls['relpath'])
-
             result.append({
                 'class_name': cls_name,
-                'module': module_path,
-                'relpath': relative_path,
+                'module': cur_cls['relpath'].split('\\')[2] + "::" + cur_cls['relpath'].split('\\')[3],
+                'relpath': cur_cls['relpath'],
                 'added_functions': sorted(added),
                 'removed_functions': sorted(removed)
             })
@@ -255,17 +245,15 @@ def diff_to_excel(diff_result, output_file):
     
 
 if __name__ == "__main__":
-    prev_u_classes = parse_ue_classes(UE_PREV_SOURCE_DIR)
+    prev_u_classes = parse_ue_classes(UE_PREV_ROOT_DIR, "5.4")
 
     prev_blueprint_classes = list({
         cls["name"]: cls
         for cls in filter_blueprinttype_classes(prev_u_classes) + filter_blueprintable_classes(prev_u_classes)
     }.values())
     
-    # Parse current classes
-    cur_u_classes = parse_ue_classes(UE_CUR_SOURCE_DIR)
+    cur_u_classes = parse_ue_classes(UE_CUR_ROOT_DIR, "5.5")
     
-    # Merge and deduplicate current classes
     cur_blueprint_classes = list({
         cls["name"]: cls 
         for cls in filter_blueprinttype_classes(cur_u_classes) + filter_blueprintable_classes(cur_u_classes)
@@ -273,7 +261,6 @@ if __name__ == "__main__":
 
     blueprint_api_diff = diff(prev_blueprint_classes, cur_blueprint_classes)
 
-    # import json
     # print(json.dumps(blueprint_api_diff, indent=4))
 
     diff_to_excel(blueprint_api_diff, "outputs/diff.xlsx")
