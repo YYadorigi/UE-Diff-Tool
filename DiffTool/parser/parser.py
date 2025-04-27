@@ -80,6 +80,7 @@ def parse_class_declaration(class_decl: str) -> dict[str, any]:
     try:
         parsed = parse_string(class_decl)
     except Exception as e:
+        print(f"Error parsing class declaration: {class_decl}")
         raise ValueError(f"Failed to parse class declaration: {e}")
 
     if not parsed.namespace.classes:
@@ -120,6 +121,7 @@ def parse_function_declaration(func_decl: str) -> dict[str, any]:
     try:
         parsed = parse_string(func_decl)
     except Exception as e:
+        print(f"Error parsing function declaration: {func_decl}")
         raise ValueError(f"Failed to parse function declaration: {e}")
 
     try:
