@@ -2,7 +2,7 @@ import re
 
 
 def remove_string_literals(code: str) -> str:
-    """Remove all string literals from code while preserving other content
+    """Remove all string literals from code while preserving other content.
     
     Args:
         code: Input source code string
@@ -43,7 +43,7 @@ def remove_string_literals(code: str) -> str:
 
 def extract_arguments(sentence: str, keyword: str) -> str:
     """
-    Extracts the arguments inside the parentheses from a given string formed as `XXX(...)`
+    Extracts the arguments inside the parentheses from a given string formed as `XXX(...)`.
     
     Args:
         sentence (str): The string containing the assigned keyword and its corresponding arguments
@@ -103,7 +103,7 @@ def extract_arguments(sentence: str, keyword: str) -> str:
 
 def read_arguments(s: str, index: int) -> str:
     """
-    Extracts nested parentheses content starting from given index (which should point to '(')
+    Extracts nested parentheses content starting from given index (which should point to '(').
     
     Args:
         s: The input string containing parentheses
@@ -225,7 +225,7 @@ def split_arguments(arg_str: str) -> list[str]:
 
 def read_class_body(s: str, index: int) -> str:
     """
-    Extracts nested braces content starting from given index (which should point to '{')
+    Extracts nested braces content starting from given index (which should point to '{').
     
     Args:
         s: The input string containing braces

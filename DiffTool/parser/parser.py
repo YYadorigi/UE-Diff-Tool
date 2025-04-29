@@ -2,10 +2,16 @@ from cxxheaderparser.types import *
 from cxxheaderparser.simple import parse_string
 from DiffTool.utils import *
 
-# cxxheaderparser utilities
+def incomplete(func):
+    def wrapper(*args, **kwargs):
+        print(f"Warning: {func.__name__} is not fully implemented yet.")
+        return func(*args, **kwargs)
+    return wrapper
+
 
 # TODO: Handle more complex cases: typedefs, decltypes, auto types.
 def parse_type_specifier(type_specifier: FundamentalSpecifier | NameSpecifier) -> str:
+    """Parses a fundamental or named type specifier into its string representation."""
     type_name = type_specifier.name
 
     if isinstance(type_specifier, FundamentalSpecifier):
@@ -33,10 +39,12 @@ def parse_type_specifier(type_specifier: FundamentalSpecifier | NameSpecifier) -
 
 
 def parse_typename(typename: PQName) -> str:
+    """Parses a qualified name into its string representation."""
     return '::'.join([parse_type_specifier(segment) for segment in typename.segments])
 
 
 def parse_type(type: DecoratedType) -> str:
+    """Parses a decorated type into its string representation."""
     # Handle nested type modifiers recursively
     type_str = ""
     
@@ -106,6 +114,7 @@ def parse_class_declaration(class_decl: str) -> dict[str, any]:
     return result
 
 
+@incomplete
 def parse_function_declaration(func_decl: str) -> dict[str, any]:
     """
     Parses a C++ function declaration into its components.

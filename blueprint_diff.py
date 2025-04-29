@@ -1,6 +1,8 @@
 import os
 import re
 import json
+import warnings
+from typing import Any
 from enum import Enum
 from tqdm import tqdm
 from pathlib import Path
@@ -11,18 +13,22 @@ class Choice(Enum):
     PLUGINS = "Plugins"
     SOURCE = "Source"
 
-# Configure the path to the Unreal Engine source code directory
+
 UE_PREV_ROOT_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.4")
 UE_CUR_ROOT_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.5")
+UE_PREV_VERSION = "5.4"
+UE_CUR_VERSION = "5.5"
+DIFF_CHOICE = Choice.PLUGINS
 
-def parse_ue_classes(UEpath: Path, UEversion: str, choice: Choice) -> dict[str, dict[str, any]]:
-    u_classes: dict[str, dict[str, any]] = {}
 
-    UE_PLUGINS_DIR = Path("Engine\\Plugins")
+def parse_ue_classes(UEpath: Path, UEversion: str, choice: Choice) -> dict[str, dict[str, Any]]:
+    u_classes: dict[str, dict[str, Any]] = {}
+
     UE_SOURCE_DIR = Path("Engine\\Source")
     UE_DEVELOPER_DIR = os.path.join(UEpath, UE_SOURCE_DIR, "Developer")
     UE_EDITOR_DIR = os.path.join(UEpath, UE_SOURCE_DIR, "Editor")
     UE_RUNTIME_DIR = os.path.join(UEpath, UE_SOURCE_DIR, "Runtime")
+    UE_PLUGINS_DIR = Path("Engine\\Plugins")
     UE_PLUGINS_DIR = os.path.join(UEpath, UE_PLUGINS_DIR)
 
     all_files = []
@@ -41,7 +47,6 @@ def parse_ue_classes(UEpath: Path, UEversion: str, choice: Choice) -> dict[str, 
     for file_path in tqdm(all_files, desc="Processing UE headers", unit="files"):
         try:
             with open(file_path, "r", encoding='utf-8') as f:
-                # Read the file content
                 content = f.read()
                 
                 # Preprocessing
@@ -86,9 +91,10 @@ def parse_ue_classes(UEpath: Path, UEversion: str, choice: Choice) -> dict[str, 
                         "ufunctions": [],
                     }
 
+                    # Read class body
                     class_body = read_class_body(content[class_match.end() - 1:], 0)
                 
-                    # Parse UFUNCTION declarations
+                    # Parse UFUNCTION declarations inside class body
                     pos = 0
                     while pos < len(class_body):
                         deprecated_pos = class_body.find("UE_DEPRECATED", pos)
@@ -97,7 +103,7 @@ def parse_ue_classes(UEpath: Path, UEversion: str, choice: Choice) -> dict[str, 
                         if ufunction_pos == -1:
                             break
                     
-                        # Check if UE_DEPRECATED is preceding UFUNCTION
+                        # Check if there is a UE_DEPRECATION macro beforehand
                         has_deprecated = (
                             deprecated_pos != -1 and 
                             deprecated_pos < ufunction_pos and
@@ -112,7 +118,6 @@ def parse_ue_classes(UEpath: Path, UEversion: str, choice: Choice) -> dict[str, 
                         while func_decl_start < len(class_body) and class_body[func_decl_start] in re_backslash_s:
                             func_decl_start += 1
                     
-                        # Find function declaration end
                         func_decl_end = func_decl_start
                         while func_decl_end < len(class_body):
                             c = class_body[func_decl_end]
@@ -123,7 +128,7 @@ def parse_ue_classes(UEpath: Path, UEversion: str, choice: Choice) -> dict[str, 
                         func_decl = class_body[func_decl_start:func_decl_end].strip()
                         func_name = func_decl[:func_decl.find('(')].strip().split()[-1]
                         
-                        # Handle deprecation check
+                        # Skip deprecated functions
                         if has_deprecated:
                             dep_args = read_arguments(class_body, deprecated_pos + len("UE_DEPRECATED"))
                             version = split_arguments(dep_args)[0]
@@ -138,13 +143,13 @@ def parse_ue_classes(UEpath: Path, UEversion: str, choice: Choice) -> dict[str, 
                         
                         pos = func_decl_end
         except Exception as e:
-            print(f"Error processing {file_path}")
+            print(f"Error processing {file_path}. Please check the file manually.")
                     
     return u_classes
 
 
-def filter_blueprinttype_classes(u_classes: dict[str, dict[str, any]]):
-    blueprinttype_classes = []
+def filter_blueprinttype_classes(u_classes: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    blueprinttype_classes: list[dict[str, Any]] = []
     for class_name, class_info in u_classes.items():
         if "BlueprintType" in class_info["uclass_params"]:
             blueprinttype_classes.append({
@@ -155,8 +160,9 @@ def filter_blueprinttype_classes(u_classes: dict[str, dict[str, any]]):
     return blueprinttype_classes
 
 
-def filter_blueprintable_classes(u_classes: dict[str, dict[str, any]]):
-    blueprintable_cache = {}
+def filter_blueprintable_classes(u_classes: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter out classes that are not blueprintable."""
+    blueprintable_cache: dict[str, bool] = {}
     
     def is_blueprintable(cls_name: str) -> bool:
         # Check cache first
@@ -185,7 +191,7 @@ def filter_blueprintable_classes(u_classes: dict[str, dict[str, any]]):
         return False
     
     # Check all classes and collect qualified ones
-    result = []
+    result: list[dict[str, Any]] = []
     for cls_name, cls_info in u_classes.items():
         if is_blueprintable(cls_name):
             result.append({
@@ -197,7 +203,7 @@ def filter_blueprintable_classes(u_classes: dict[str, dict[str, any]]):
     return result
 
 
-def filter_blueprint_functions(u_functions: list[dict[str, any]]) -> list[str]:
+def filter_blueprint_functions(u_functions: list[dict[str, Any]]) -> list[str]:
     blueprint_functions: list[str] = []
     for function in u_functions:
         if "BlueprintCallable" in function["ufunc_params"] or "BlueprintPure" in function["ufunc_params"]:
@@ -205,11 +211,11 @@ def filter_blueprint_functions(u_functions: list[dict[str, any]]) -> list[str]:
     return blueprint_functions
 
 
-def diff(prev_list, cur_list):
+def diff(prev_list: list[dict[str, Any]], cur_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
     prev_classes = {cls['name']: cls for cls in prev_list}
     cur_classes = {cls['name']: cls for cls in cur_list}
     
-    result = []
+    result: list[dict[str, Any]] = []
     
     all_classes = set(prev_classes.keys()).union(cur_classes.keys())
     
@@ -220,6 +226,8 @@ def diff(prev_list, cur_list):
         prev_funcs = prev_cls['ufunctions'] if prev_cls else []
         cur_funcs = cur_cls['ufunctions'] if cur_cls else []
 
+        # if prev_cls and cur_cls and prev_cls['relpath'] != cur_cls['relpath']:
+        #     print(f"Class '{cls_name}' has changed paths: {prev_cls['relpath']} -> {cur_cls['relpath']}")
         relpath = cur_cls['relpath'] if cur_cls else prev_cls['relpath']
 
         added = list(set(cur_funcs) - set(prev_funcs))
@@ -238,7 +246,7 @@ def diff(prev_list, cur_list):
     return result
 
 
-def diff_to_excel(diff_result, output_file):
+def diff_to_excel(diff_result: list[dict[str, Any]], output_file: str) -> None:
     # Convert to DataFrame and explode list columns
     df = pd.DataFrame(diff_result)
     
@@ -255,7 +263,7 @@ def diff_to_excel(diff_result, output_file):
     combined_df = pd.concat([added_df, removed_df], ignore_index=True)
     
     # Reorder and select final columns
-    final_df = combined_df[['class_name', 'module', 'relpath', 'change_type', 'function']]
+    final_df = combined_df[['module', 'relpath', 'class_name', 'function', 'change_type']]
     
     with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
         final_df.to_excel(writer, sheet_name="API Changes", index=False)
@@ -270,7 +278,7 @@ def diff_to_excel(diff_result, output_file):
     
 
 if __name__ == "__main__":
-    prev_u_classes = parse_ue_classes(UE_PREV_ROOT_DIR, "5.4", Choice.SOURCE)
+    prev_u_classes = parse_ue_classes(UE_PREV_ROOT_DIR, UE_PREV_VERSION, DIFF_CHOICE)
 
     prev_blueprint_classes = list({
         cls["name"]: cls
@@ -279,7 +287,7 @@ if __name__ == "__main__":
 
     # print(json.dumps(prev_blueprint_classes, indent=4))
     
-    cur_u_classes = parse_ue_classes(UE_CUR_ROOT_DIR, "5.5", Choice.SOURCE)
+    cur_u_classes = parse_ue_classes(UE_CUR_ROOT_DIR, UE_CUR_VERSION, DIFF_CHOICE)
     
     cur_blueprint_classes = list({
         cls["name"]: cls 
@@ -292,4 +300,4 @@ if __name__ == "__main__":
 
     # print(json.dumps(blueprint_api_diff, indent=4))
 
-    diff_to_excel(blueprint_api_diff, "outputs/diff.xlsx")
+    diff_to_excel(blueprint_api_diff, f"outputs/blueprint_diff_{UE_PREV_VERSION}_{UE_CUR_VERSION}.xlsx")
