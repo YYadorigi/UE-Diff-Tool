@@ -16,7 +16,7 @@ class Choice(Enum):
 
 UE_ROOT_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.5")
 UE_VERSION = "5.5"
-DEPRECATION_CHOICE = Choice.SOURCE
+DEPRECATION_CHOICE = Choice.PLUGINS
 
 
 def filter_deprecation_files(UEpath: Path, UEversion: str, choice: Choice) -> None:
@@ -44,28 +44,32 @@ def filter_deprecation_files(UEpath: Path, UEversion: str, choice: Choice) -> No
         shutil.rmtree("outputs/deprecations", onexc=lambda f,p,_: (os.chmod(p, 0o777), f(p)))
     os.makedirs("outputs/deprecations")   
 
-    for root, file in tqdm(all_files, desc="Processing files", unit="file"):
-        file_path = os.path.join(root, file)
-        with open(file_path, "r", encoding='utf-8', errors='ignore') as f:
-            content = f.read()
+    for file_path in tqdm(all_files, desc="Processing files", unit="file"):
+        try:
+            with open(file_path, "r", encoding='utf-8', errors='ignore') as f:
+                content = f.read()
 
-            deprecated_matches = re.finditer(
-                r"UE_DEPRECATED\s*\(\s*(\d+\.\d+)\s*,\s*\"(.*?)\"\s*\)",
-                content,
-                re.DOTALL
-            )
+                deprecated_matches = re.finditer(
+                    r"UE_DEPRECATED\s*\(\s*(\d+\.\d+)\s*,\s*\"(.*?)\"\s*\)",
+                    content,
+                    re.DOTALL
+                )
 
-            for deprecated_match in deprecated_matches:
-                deprecated_version = deprecated_match.group(1)
-                if deprecated_version == UEversion:
-                    relative_path = Path(file_path).relative_to(UEpath)
-                    output_path = Path("outputs/deprecations") / relative_path
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy(file_path, str(output_path))
-                    break
+                for deprecated_match in deprecated_matches:
+                    deprecated_version = deprecated_match.group(1)
+                    if deprecated_version == UEversion:
+                        relative_path = Path(file_path).relative_to(UEpath)
+                        output_path = Path("outputs/deprecations") / relative_path
+                        output_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy(file_path, str(output_path))
+                        break
+        except Exception as e:
+            print(f"Error processing file {file_path}. Please check the file manually.")
+
     return
 
 
+# TODO: Support parsing more types of deprecations
 def parse_deprecated_functions(UEpath: Path, UEversion: str, choice: Choice) -> list[dict[str, Any]]:
     # Filter files with deprecated functions
     filter_deprecation_files(UEpath, UEversion, choice)
@@ -92,8 +96,7 @@ def parse_deprecated_functions(UEpath: Path, UEversion: str, choice: Choice) -> 
                 if file.endswith(".h")
             )
 
-    for root, file in tqdm(all_files, desc="Processing files", unit="file"):
-        file_path = os.path.join(root, file)
+    for file_path in tqdm(all_files, desc="Processing files", unit="file"):
         try:
             with open(file_path, "r", encoding='utf-8') as f:
                 # Read the file content
@@ -128,14 +131,15 @@ def parse_deprecated_functions(UEpath: Path, UEversion: str, choice: Choice) -> 
     return deprecated_functions
 
 
-def report_deprecated_functions(deprecated_funcs: list[dict[str, Any]]) -> None:
+# TODO: Implement more organized report
+def report_deprecated_functions(deprecated_funcs: list[dict[str, Any]], output: str) -> None:
     # Create a DataFrame from the deprecated functions list
     df = pd.DataFrame(deprecated_funcs)
     # Save the DataFrame to a CSV file
-    df.to_csv("outputs/deprecated_functions.csv", index=False)
+    df.to_csv(output, index=False)
 
 
 if __name__ == "__main__":
     deprecated_funcs = parse_deprecated_functions(UE_ROOT_DIR, UE_VERSION, DEPRECATION_CHOICE)
     
-    report_deprecated_functions(deprecated_funcs)
+    report_deprecated_functions(deprecated_funcs, f"outputs/UE_DEPRECATED_{UE_VERSION}.csv")

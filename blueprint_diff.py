@@ -246,6 +246,7 @@ def diff(prev_list: list[dict[str, Any]], cur_list: list[dict[str, Any]]) -> lis
     return result
 
 
+# TODO: implement more organized output
 def diff_to_excel(diff_result: list[dict[str, Any]], output_file: str) -> None:
     # Convert to DataFrame and explode list columns
     df = pd.DataFrame(diff_result)
