@@ -1,16 +1,21 @@
 import os
 import re
 import json
+from enum import Enum
 from tqdm import tqdm
 from pathlib import Path
 import pandas as pd
 from DiffTool import *
 
+class Choice(Enum):
+    PLUGINS = "Plugins"
+    SOURCE = "Source"
+
 # Configure the path to the Unreal Engine source code directory
 UE_PREV_ROOT_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.4")
 UE_CUR_ROOT_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.5")
 
-def parse_ue_classes(UEpath: Path, UEversion: str) -> dict[str, dict[str, any]]:
+def parse_ue_classes(UEpath: Path, UEversion: str, choice: Choice) -> dict[str, dict[str, any]]:
     u_classes: dict[str, dict[str, any]] = {}
 
     UE_PLUGINS_DIR = Path("Engine\\Plugins")
@@ -21,7 +26,11 @@ def parse_ue_classes(UEpath: Path, UEversion: str) -> dict[str, dict[str, any]]:
     UE_PLUGINS_DIR = os.path.join(UEpath, UE_PLUGINS_DIR)
 
     all_files = []
-    for target_dir in [UE_DEVELOPER_DIR, UE_EDITOR_DIR, UE_RUNTIME_DIR, UE_PLUGINS_DIR]:
+    target_dirs = [
+        *([UE_DEVELOPER_DIR, UE_EDITOR_DIR, UE_RUNTIME_DIR] if choice == Choice.SOURCE else []),
+        *([UE_PLUGINS_DIR] if choice == Choice.PLUGINS else [])
+    ] if choice else [UE_DEVELOPER_DIR, UE_EDITOR_DIR, UE_RUNTIME_DIR, UE_PLUGINS_DIR]
+    for target_dir in target_dirs:
         for root, _, files in os.walk(target_dir):
             all_files.extend(
                 os.path.join(root, file) 
@@ -30,90 +39,107 @@ def parse_ue_classes(UEpath: Path, UEversion: str) -> dict[str, dict[str, any]]:
             )
 
     for file_path in tqdm(all_files, desc="Processing UE headers", unit="files"):
-        with open(file_path, "r", encoding='utf-8', errors='ignore') as f:
-            # Read the file content
-            content = f.read()
-
-            # Preprocessing
-            content = re.sub(r'\s*//.*', '', content, flags=re.MULTILINE)       # Remove C++ comments
-            content = re.sub(r'^\s*#.*$', '', content, flags=re.MULTILINE)      # Remove preprocessor directives
-    
-            # Extract all UCLASS macro definitions
-            class_matches = re.finditer(
-                r'^\s*UCLASS\s*\((.*?)\)\s*'
-                r'class\s+(.*?)\s*([{;])',
-                content,
-                re.DOTALL | re.MULTILINE
-            )
-
-            for class_match in class_matches:
-                uclass_params = split_arguments(extract_arguments('UCLASS(' + class_match.group(1) + ')', 'UCLASS'))
-
-                class_decl = (lambda decl: 
-                    'class ' + re.sub(r'\b[A-Z0-9_]+_API\s*', '', decl.strip()) + ' {};'
-                )(class_match.group(2))
-
-                # Match UE_DEPRECATED macro
-                deprecated_match = re.search(r"UE_DEPRECATED\s*\(\s*(\d+\.\d+)\s*,\s*\"(.*?)\"\s*\)", class_decl, re.DOTALL)
-                if deprecated_match:
-                    deprecated_version = deprecated_match.group(1)
-                    if float(deprecated_version) <= float(UEversion):
-                        continue
-                    class_decl = class_decl[:deprecated_match.start()] + class_decl[deprecated_match.end():]
-
-                class_decl_parsed = parse_class_declaration(class_decl)
-
-                class_name = class_decl_parsed["name"]
-                inheritance_list = class_decl_parsed["bases"]
-
-                u_classes[class_name] = {
-                    "relpath": os.path.relpath(file_path, UEpath),
-                    "uclass_params": uclass_params,
-                    "inheritance_list": inheritance_list,
-                    "ufunctions": [],
-                }
-                            
-                class_body = content[class_match.end() - 1:]
-                if class_body.startswith(';'):
-                    continue
-                brace_level = 0
-                i = 0
-                while i < len(class_body):
-                    if class_body[i] == '{':
-                        brace_level += 1
-                    elif class_body[i] == '}':
-                        brace_level -= 1
-                        if brace_level == 0:
-                            break
-                    i += 1
-                class_body = class_body[:(i+1)]
-                            
-                # Find all UFUNCTION declarations in class body
-                function_matches = re.finditer(
-                    r'(?:^\s*UE_DEPRECATED\s*\(\s*(\d+\.\d+)\s*,\s*"(.*?)"\s*\)\s*)?'
-                    r'^\s*(UFUNCTION\s*\([^\n]*\))\s*'
-                    r'^\s*([^{;]+)',
-                    class_body,
+        try:
+            with open(file_path, "r", encoding='utf-8') as f:
+                # Read the file content
+                content = f.read()
+                
+                # Preprocessing
+                content = re.sub(r'TEXT\s*\(\"(.*?)\"\)', 'TEXT("")', content)      # Replace TEXT("...") with empty string
+                content = re.sub(r'^\s*#.*', '', content, flags=re.MULTILINE)       # Remove preprocessor directives
+                content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)        # Remove multi-line comments
+                content = re.sub(r'\s*//.*', '', content, flags=re.MULTILINE)       # Remove C++ comments
+            
+                # Extract all UCLASS macro definitions
+                class_matches = re.finditer(
+                    r'^\s*UCLASS\s*\((.*?)\)\s*'
+                    r'class\s+(.*?)\s*([{;])',
+                    content,
                     re.DOTALL | re.MULTILINE
                 )
 
-                for func_match in function_matches:
-                    deprecated_version = func_match.group(1)
-                    if deprecated_version and float(deprecated_version) <= float(UEversion):
-                        continue
+                for class_match in class_matches:
+                    uclass_params = split_arguments(extract_arguments(f"UCLASS({class_match.group(1)})", 'UCLASS'))
 
-                    ufunction_str = extract_arguments(func_match.group(3), 'UFUNCTION')
-                    ufunction_params = split_arguments(ufunction_str)
+                    def process_class_decl(decl):
+                        cleaned_decl = re.sub(r'\b[A-Z0-9_]+_API\s*', '', decl.strip())
+                        return f"class {cleaned_decl} {{}};"
+                    class_decl = process_class_decl(class_match.group(2))
 
-                    func_decl = func_match.group(4)
-                                
-                    func_name = func_decl[:func_decl.find('(')].strip().split()[-1]
+                    # Skip UE_DEPRECATED macro
+                    deprecated_match = re.search(r"UE_DEPRECATED\s*\(\s*(\d+\.\d+)\s*,\s*\"(.*?)\"\s*\)", class_decl, re.DOTALL)
+                    if deprecated_match:
+                        deprecated_version = deprecated_match.group(1)
+                        if float(deprecated_version) <= float(UEversion):
+                            continue
+                        class_decl = class_decl[:deprecated_match.start()] + class_decl[deprecated_match.end():]
 
-                    # Add function name to list
-                    u_classes[class_name]["ufunctions"].append({
-                        "name": func_name,
-                        "ufunc_params": ufunction_params
-                   })
+                    class_decl_parsed = parse_class_declaration(class_decl)
+
+                    class_name = class_decl_parsed["name"]
+                    inheritance_list = class_decl_parsed["bases"]
+
+                    u_classes[class_name] = {
+                        "relpath": os.path.relpath(file_path, UEpath),
+                        "uclass_params": uclass_params,
+                        "inheritance_list": inheritance_list,
+                        "ufunctions": [],
+                    }
+
+                    class_body = read_class_body(content[class_match.end() - 1:], 0)
+                
+                    # Parse UFUNCTION declarations
+                    pos = 0
+                    while pos < len(class_body):
+                        deprecated_pos = class_body.find("UE_DEPRECATED", pos)
+                        ufunction_pos = class_body.find("UFUNCTION", pos)
+                    
+                        if ufunction_pos == -1:
+                            break
+                    
+                        # Check if UE_DEPRECATED is preceding UFUNCTION
+                        has_deprecated = (
+                            deprecated_pos != -1 and 
+                            deprecated_pos < ufunction_pos and
+                            class_body[deprecated_pos:ufunction_pos].strip().endswith(")")
+                        )
+                    
+                        ufunction_args = read_arguments(class_body, ufunction_pos + len("UFUNCTION"))
+                        args_end = ufunction_pos + len("UFUNCTION()") + len(ufunction_args)
+                    
+                        func_decl_start = args_end
+                        re_backslash_s = {' ', '\t', '\n', '\r', '\f', '\v'}
+                        while func_decl_start < len(class_body) and class_body[func_decl_start] in re_backslash_s:
+                            func_decl_start += 1
+                    
+                        # Find function declaration end
+                        func_decl_end = func_decl_start
+                        while func_decl_end < len(class_body):
+                            c = class_body[func_decl_end]
+                            if c == ';' or c == '{':
+                                break
+                            func_decl_end += 1
+                        
+                        func_decl = class_body[func_decl_start:func_decl_end].strip()
+                        func_name = func_decl[:func_decl.find('(')].strip().split()[-1]
+                        
+                        # Handle deprecation check
+                        if has_deprecated:
+                            dep_args = read_arguments(class_body, deprecated_pos + len("UE_DEPRECATED"))
+                            version = split_arguments(dep_args)[0]
+                            if version.strip('"\'') in {'all', ''} or float(version.strip('"\'')) <= float(UEversion):
+                                pos = func_decl_end
+                                continue
+                        
+                        u_classes[class_name]["ufunctions"].append({
+                            "name": func_name,
+                            "ufunc_params": split_arguments(ufunction_args),
+                        })
+                        
+                        pos = func_decl_end
+        except Exception as e:
+            print(f"Error processing {file_path}")
+                    
     return u_classes
 
 
@@ -244,7 +270,7 @@ def diff_to_excel(diff_result, output_file):
     
 
 if __name__ == "__main__":
-    prev_u_classes = parse_ue_classes(UE_PREV_ROOT_DIR, "5.4")
+    prev_u_classes = parse_ue_classes(UE_PREV_ROOT_DIR, "5.4", Choice.SOURCE)
 
     prev_blueprint_classes = list({
         cls["name"]: cls
@@ -253,7 +279,7 @@ if __name__ == "__main__":
 
     # print(json.dumps(prev_blueprint_classes, indent=4))
     
-    cur_u_classes = parse_ue_classes(UE_CUR_ROOT_DIR, "5.5")
+    cur_u_classes = parse_ue_classes(UE_CUR_ROOT_DIR, "5.5", Choice.SOURCE)
     
     cur_blueprint_classes = list({
         cls["name"]: cls 

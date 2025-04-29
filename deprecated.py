@@ -32,7 +32,6 @@ def filter_deprecated_files(UEpath: Path, UEversion: str) -> int:
 
     # Process files with tqdm progress bar
     file_count = 0
-    match_count = 0
     for root, file in tqdm(all_files, desc="Processing files", unit="file"):
         file_path = os.path.join(root, file)
         with open(file_path, "r", encoding='utf-8', errors='ignore') as f:
@@ -45,7 +44,6 @@ def filter_deprecated_files(UEpath: Path, UEversion: str) -> int:
             )
 
             for deprecated_match in deprecated_matches:
-                match_count += 1
                 deprecated_version = deprecated_match.group(1)
                 if deprecated_version == UEversion:
                     relative_path = Path(file_path).relative_to(UEpath)
@@ -54,7 +52,7 @@ def filter_deprecated_files(UEpath: Path, UEversion: str) -> int:
                     shutil.copy(file_path, str(output_path))
                     file_count += 1
                     break
-    return file_count, match_count
+    return file_count
 
 
 def parse_deprecated_functions() -> list[any]:
@@ -69,7 +67,7 @@ def parse_deprecated_functions() -> list[any]:
     UE_PLUGINS_DIR = os.path.join(output_path, UE_PLUGINS_DIR)
 
     # Traverse the UE source code directory
-    for target_dir in [UE_DEVELOPER_DIR, UE_EDITOR_DIR, UE_RUNTIME_DIR, """UE_PLUGINS_DIR"""]:
+    for target_dir in [UE_DEVELOPER_DIR, UE_EDITOR_DIR, UE_RUNTIME_DIR, UE_PLUGINS_DIR]:
         for root, _, files in os.walk(target_dir):
             for file in files:
                 if file.endswith(".h"):
