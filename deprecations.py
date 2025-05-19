@@ -14,9 +14,10 @@ class Choice(Enum):
     SOURCE = "Source"
 
 
-UE_ROOT_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.5")
-UE_VERSION = "5.5"
+UE_ROOT_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.6")
+UE_VERSION = "5.6"
 DEPRECATION_CHOICE = Choice.PLUGINS
+OUTPUT_DIR = "outputs/deprecations"
 
 
 def filter_deprecation_files(UEpath: Path, UEversion: str, choice: Choice) -> None:
@@ -40,14 +41,21 @@ def filter_deprecation_files(UEpath: Path, UEversion: str, choice: Choice) -> No
                 if file.endswith(".h")
             )
     
-    if os.path.exists("outputs/deprecations"):
-        shutil.rmtree("outputs/deprecations", onexc=lambda f,p,_: (os.chmod(p, 0o777), f(p)))
-    os.makedirs("outputs/deprecations")   
+    if os.path.exists(OUTPUT_DIR):
+        shutil.rmtree(OUTPUT_DIR, onexc=lambda f,p,_: (os.chmod(p, 0o777), f(p)))
+    os.makedirs(OUTPUT_DIR)   
 
     for file_path in tqdm(all_files, desc="Processing files", unit="file"):
         try:
             with open(file_path, "r", encoding='utf-8', errors='ignore') as f:
                 content = f.read()
+
+                # Preprocessing
+                content = re.sub(r'TEXT\s*\(\"(.*?)\"\)', 'TEXT("")', content)      # Replace TEXT("...") with empty string
+                content = re.sub(r'^\s*#.*', '', content, flags=re.MULTILINE)       # Remove preprocessor directives
+                content = re.sub(r'^\s*(UCLASS|USTRUCT|UFUNCTION|UPROPERTY).*', '', content, flags=re.MULTILINE)  # Remove UE macros
+                content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)        # Remove multi-line comments
+                content = re.sub(r'\s*//.*', '', content, flags=re.MULTILINE)       # Remove C++ comments
 
                 deprecated_matches = re.finditer(
                     r"UE_DEPRECATED\s*\(\s*(\d+\.\d+)\s*,\s*\"(.*?)\"\s*\)",
@@ -59,9 +67,10 @@ def filter_deprecation_files(UEpath: Path, UEversion: str, choice: Choice) -> No
                     deprecated_version = deprecated_match.group(1)
                     if deprecated_version == UEversion:
                         relative_path = Path(file_path).relative_to(UEpath)
-                        output_path = Path("outputs/deprecations") / relative_path
+                        output_path = Path(OUTPUT_DIR) / relative_path
                         output_path.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy(file_path, str(output_path))
+                        with open(output_path, 'w', encoding='utf-8') as f:
+                            f.write(content)
                         break
         except Exception as e:
             print(f"Error processing file {file_path}. Please check the file manually.")
@@ -77,11 +86,11 @@ def parse_deprecated_functions(UEpath: Path, UEversion: str, choice: Choice) -> 
     deprecated_functions: list[dict[str, Any]] = []
 
     UE_SOURCE_DIR = Path("Engine\\Source")
-    UE_DEVELOPER_DIR = os.path.join("outputs/deprecations", UE_SOURCE_DIR, "Developer")
-    UE_EDITOR_DIR = os.path.join("outputs/deprecations", UE_SOURCE_DIR, "Editor")
-    UE_RUNTIME_DIR = os.path.join("outputs/deprecations", UE_SOURCE_DIR, "Runtime")
+    UE_DEVELOPER_DIR = os.path.join(OUTPUT_DIR, UE_SOURCE_DIR, "Developer")
+    UE_EDITOR_DIR = os.path.join(OUTPUT_DIR, UE_SOURCE_DIR, "Editor")
+    UE_RUNTIME_DIR = os.path.join(OUTPUT_DIR, UE_SOURCE_DIR, "Runtime")
     UE_PLUGINS_DIR = Path("Engine\\Plugins")
-    UE_PLUGINS_DIR = os.path.join("outputs/deprecations", UE_PLUGINS_DIR)
+    UE_PLUGINS_DIR = os.path.join(OUTPUT_DIR, UE_PLUGINS_DIR)
 
     all_files = []
     target_dirs = [
@@ -113,15 +122,21 @@ def parse_deprecated_functions(UEpath: Path, UEversion: str, choice: Choice) -> 
                     deprecated_version = function_match.group(1)
                     deprecated_reason = function_match.group(2)
                     function_declaration = function_match.group(3)
+                    # function_line = content[:function_match.start()].count('\n') + 1
 
-                    if float(deprecated_version) == 5.5:
+                    if deprecated_version == UEversion:
                         function_declaration = function_declaration.strip()
                         func_name = function_declaration[:function_declaration.find('(')].strip().split()[-1]
-                        relpath = str(Path(file_path).relative_to("outputs/deprecations"))
+                        relpath = str(Path(file_path).relative_to(OUTPUT_DIR))
+                        
+                        # Find the innermost scope containing the function
+                        local_scope = None
+                        
                         deprecated_functions.append({
                             "relpath": relpath,
                             "module": relpath.split("\\")[2] + "::" + relpath.split("\\")[3],
                             "name": func_name,
+                            "scope": local_scope,
                             "reason": deprecated_reason,
                             "declaration": function_declaration,
                         })

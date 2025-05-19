@@ -14,10 +14,10 @@ class Choice(Enum):
     SOURCE = "Source"
 
 
-UE_PREV_ROOT_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.4")
-UE_CUR_ROOT_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.5")
-UE_PREV_VERSION = "5.4"
-UE_CUR_VERSION = "5.5"
+UE_PREV_ROOT_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.5")
+UE_CUR_ROOT_DIR = Path("E:\\Program Files\\Epic Games\\UE_5.6")
+UE_PREV_VERSION = "5.5"
+UE_CUR_VERSION = "5.6"
 DIFF_CHOICE = Choice.PLUGINS
 
 
@@ -67,7 +67,7 @@ def parse_ue_classes(UEpath: Path, UEversion: str, choice: Choice) -> dict[str, 
                     uclass_params = split_arguments(extract_arguments(f"UCLASS({class_match.group(1)})", 'UCLASS'))
 
                     def process_class_decl(decl):
-                        cleaned_decl = re.sub(r'\b[A-Z0-9_]+_API\s*', '', decl.strip())
+                        cleaned_decl = re.sub(r'\b[a-zA-Z0-9_]+_API\s*', '', decl.strip())
                         return f"class {cleaned_decl} {{}};"
                     class_decl = process_class_decl(class_match.group(2))
 
